@@ -1,0 +1,187 @@
+---
+title: "CorrelationOutlierDetec"
+author: "Glory Scheel"
+date: "6/2/2020"
+output: html_document
+---
+#### Upload libraries and import data
+
+
+```{r}
+library(tseries)
+library(forecast)
+library(xts)
+library(wavelets)
+library(gtools)
+library(roll)
+library(zoo)
+library(TTR)
+library(ggplot2)
+library(TSstudio)
+library(stringr)
+```
+
+#### Import Data
+```{r}
+dat<-read.csv('C:/Users/glory/Downloads/pump-sensor-data/sensor_new.csv')
+status<-read.csv('C:/Users/glory/Downloads/pump-sensor-data/sensor.csv')
+```
+
+#### Make timestamp a time object and remove columns for to prepare to make data into time series
+```{r}
+dat$timestamp<-as.POSIXct(dat$timestamp)
+
+x<-subset(dat,select=-c(machine_status,X))
+
+```
+
+#### Create train and testing sets
+```{r}
+xTS<-ts(x,frequency = 1)
+
+#put data in train test too so we can grab machine status'
+trainDat<-head(dat,154224)
+testDat<-tail(dat,66096)
+
+train<-head(xTS,154224)
+test<-tail(xTS,66096)
+xtrain<-train[,2:52]
+xtest<-test[,2:52]
+
+
+```
+
+#### Create Training function
+```{r}
+MTS.CCODtrain<-function(xtrain,num_out,wind){
+  seqe<-seq(1,ncol(xtrain),1)
+  colCombn<-combn(seqe,2,simplify = FALSE)
+  indexes=list()
+  BP=list()
+  for (i in seq(1,length(colCombn),1)){
+    Second<-colCombn[[i]][2]
+    first<-colCombn[[i]][1]
+    CR<-runCor(xtrain[,first],xtrain[,Second],n=wind)
+    BP[[i]]<-boxplot(CR)
+    indexes[[i]]<-which(CR %in% boxplot(CR)$out )
+  }
+  unInd<-unlist(indexes)
+  grtr<-which(table(unInd)>num_out, arr.ind = TRUE)
+  listy=list()
+  listy[[1]]<-grtr
+  listy[[2]]<-indexes
+  listy[[3]]<-BP
+  return(listy)
+  #returns indexes of outlying values
+  
+}
+
+```
+
+
+#### Create Testing function
+```{r}
+MTS.CCODtest<-function(Xtest,BP, num_out,wind){
+  teInd=list()
+  seqe2<-seq(1,ncol(xtest),1)
+  colCombn2<-combn(seqe2,2,simplify = FALSE)
+  for (i in seq(1,length(colCombn2),1)){
+    Second<-colCombn2[[i]][2]
+    first<-colCombn2[[i]][1]
+    CRte<-runCor(Xtest[,first],Xtest[,Second],n=wind)
+    teInd[[i]]<-which(CRte  > BP[[i]]$stats[5]| CRte < BP[[i]]$stats[1])
+  }
+  unInd<-unlist(teInd)
+  TeOut<-which(table(unInd)>num_out, arr.ind = TRUE)
+  testListy=list()
+  testListy[[1]]=unInd
+  testListy[[2]]=TeOut
+  return(testListy)
+  #returns indexes of outlying values
+}
+```
+
+#### Fit to training data
+```{r include=FALSE}
+trainVal<-MTS.CCODtrain(xtrain,num_out = 180,wind=50)
+range(trainVal[[1]])
+trainOutliers<-trainVal[[1]]
+BP<-trainVal[[3]]
+
+```
+
+#### Use on test data
+```{r}
+testSet<-MTS.CCODtest(Xtest=xtest,BP=BP,num_out = 200,wind=50)
+testOutliers<-testSet[[2]]
+```
+
+
+#### Look at how the training data performed in training
+```{r}
+levels(trainDat$machine_status)<-c("BROKEN","NORMAL","RECOVERING","PREBROKEN")
+
+trainDat$machine_status[trainOutliers]<-str_replace(trainDat$machine_status[trainOutliers],"NORMAL","PREBROKEN")
+
+trainDat$machine_status2 <- factor(trainDat$machine_status, c("BROKEN","PREBROKEN","RECOVERING","NORMAL"))
+
+
+ggplot(trainDat[1:154224,],aes(x=timestamp,y=machine_status,colour=factor(machine_status2)))+geom_point()
+```
+
+#### Look at how test data performed
+```{r}
+levels(testDat$machine_status)<-c("BROKEN","NORMAL","RECOVERING","PREBROKEN")
+testDat$machine_status[testOutliers]<-str_replace(testDat$machine_status[testOutliers],"NORMAL","PREBROKEN")
+
+testDat$fCategory <- factor(testDat$machine_status)
+ggplot(testDat,aes(x=timestamp,y=machine_status,colour=factor(fCategory)))+geom_point()
+
+
+```
+
+#### Density/histogram plot of the Outliers
+```{r}
+d<-density((trainVal[[1]]))
+plot(d)
+hist(trainVal[[1]])
+```
+
+
+### Do Hypothesis test,
+#### H0: The outlying correlations have no effect on anomalies
+#### First we need to decide on the threshold.
+
+```{r include=FALSE}
+#deciding on threshold
+which(trainDat$machine_status=="PREBROKEN",arr.ind=TRUE)
+which(trainDat$machine_status=="BROKEN",arr.ind=TRUE)
+
+
+```
+
+#### After taking a look at when the first sign of a pre-broken instance, in the training set, is recorded and then taking the difference between that time and how long it takes for the pump to break we see,
+- first break 17156 prebroken 1,178 before
+- second break 24511, prebroken 2,358 before
+- third break 69319 prebroken 31,885 before
+- fourth break at 77792 prebroken 40,358
+- fifth break at 128041 prebroken 7,981 before
+- sixth break at 1411132 prebroken 4,414 before
+#### We will take the average time before and use this as our threshold for the hypothesis test on the test data, the average time before in the training set is 14,695 minutes before.
+
+```{r include=FALSE}
+which(testDat$machine_status=="PREBROKEN",arr.ind=TRUE)
+which(testDat$machine_status=="BROKEN",arr.ind=TRUE)
+```
+
+#### The first broken status is at 12217 and the first instance of pre-broken before that is 11,482 before that. Because of this we reject the null hypothesis.
+
+
+#### Now I want to count the points that were marked as prebroken but did not show a broken status in the test data set.
+```{r}
+sum(which(testDat$machine_status=="PREBROKEN",arr.ind=TRUE)>12217)
+
+```
+
+#### Accuracy: 
+(66096-797)/66096= .987
