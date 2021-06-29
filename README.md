@@ -10,9 +10,9 @@ In this analysis I used various R packages such as:<br/>
 -xts<br/>
 -wavelets<br/>
 -gtools<br/>
--roll
--zoo
--TTR
--ggplot2
--TSstudio
--stringr
+-roll<br/>
+-zoo<br/>
+-TTR<br/>
+-ggplot2<br/>
+-TSstudio<br/>
+-stringr<br/>
